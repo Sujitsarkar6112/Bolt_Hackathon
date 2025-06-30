@@ -1,0 +1,31 @@
+ENTERPRISE PRODUCT CATALOG
+
+Valid Product SKUs:
+- SKU-ABC: Premium Widget Pro
+- SKU-XYZ: Standard Widget  
+- SKU-ABC-V2: Premium Widget Pro V2
+- Product-X: Deluxe Gadget
+- Product-Y: Basic Gadget
+
+Campaign IDs:
+- CAMPAIGN-2024-VAL: Valentine's Day Campaign
+- PROMO-WINTER-23: Winter Clearance
+- Q1-LAUNCH: Q1 Product Launch
+- Q4-CLEARANCE: Q4 Inventory Clearance
+
+Product Categories:
+- Electronics
+- Accessories
+- Home & Garden
+- Sports & Outdoors
+
+Pricing Tiers:
+- Premium: $40-60
+- Standard: $20-40
+- Budget: $10-20
+
+Seasonal Patterns:
+- Q1: Valentine's Day boost
+- Q2: Spring cleaning surge
+- Q3: Back-to-school demand
+- Q4: Holiday shopping peak

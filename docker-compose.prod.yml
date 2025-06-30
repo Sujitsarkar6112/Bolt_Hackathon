@@ -1,0 +1,303 @@
+version: '3.8'
+
+services:
+  # NGINX Gateway with Triton Integration
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"      # Frontend
+      - "8080:8080"  # API Gateway
+    depends_on:
+      - backend
+      - forecast-service
+      - rag-service
+      - gateway-service
+      - triton-guardrails
+    volumes:
+      - ./dist:/usr/share/nginx/html:ro
+      - nginx_logs:/var/log/nginx
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Frontend Build (for nginx)
+  frontend-build:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: build
+    environment:
+      - VITE_WS_URL=ws://localhost:8080/ws
+    volumes:
+      - ./dist:/app/dist
+    command: npm run build
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/demandbot
+      - ENVIRONMENT=production
+      - LOG_LEVEL=INFO
+    depends_on:
+      - mongodb
+      - redis
+    volumes:
+      - backend_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Ingest Service with Exactly-Once Kafka
+  ingest-service:
+    build:
+      context: ./ingest_service
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TOPIC=sales_txn
+      - MONGODB_URL=mongodb://mongodb:27017/sales_db
+      - LOG_LEVEL=INFO
+    depends_on:
+      - kafka
+      - mongodb
+    volumes:
+      - ingest_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Forecast Service with Change Streams
+  forecast-service:
+    build:
+      context: ./forecast_service
+      dockerfile: Dockerfile
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/sales_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - LOG_LEVEL=INFO
+    depends_on:
+      - mongodb
+      - kafka
+      - mlflow
+    volumes:
+      - forecast_models:/app/models
+      - forecast_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Change Stream Watcher
+  sales-watcher:
+    build:
+      context: ./forecast_service
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.watch_sales"]
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/sales_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - LOG_LEVEL=INFO
+    depends_on:
+      - mongodb
+      - kafka
+    volumes:
+      - forecast_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Retrain Consumer
+  retrain-consumer:
+    build:
+      context: ./forecast_service
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.retrain_consumer"]
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/sales_db
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - LOG_LEVEL=INFO
+    depends_on:
+      - mongodb
+      - kafka
+      - mlflow
+    volumes:
+      - forecast_models:/app/models
+      - forecast_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # RAG Service with Document Watcher
+  rag-service:
+    build:
+      context: ./rag_service
+      dockerfile: Dockerfile
+    environment:
+      - MONGODB_ATLAS_URI=${MONGODB_ATLAS_URI}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DOCUMENTS_PATH=/app/enterprise_docs
+      - LOG_LEVEL=INFO
+    volumes:
+      - enterprise_docs:/app/enterprise_docs
+      - rag_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Document Watcher
+  doc-watcher:
+    build:
+      context: ./rag_service
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.watch_docs"]
+    environment:
+      - MONGODB_ATLAS_URI=${MONGODB_ATLAS_URI}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DOCUMENTS_PATH=/app/enterprise_docs
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - LOG_LEVEL=INFO
+    volumes:
+      - enterprise_docs:/app/enterprise_docs
+      - rag_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Gateway Service (WebSocket/SSE)
+  gateway-service:
+    build:
+      context: ./gateway_service
+      dockerfile: Dockerfile
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - FORECAST_URL=http://forecast-service:8002
+      - RAG_URL=http://rag-service:8003
+      - LOG_LEVEL=INFO
+    depends_on:
+      - backend
+      - forecast-service
+      - rag-service
+    volumes:
+      - gateway_logs:/app/logs
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  # Triton Guardrails
+  triton-guardrails:
+    build:
+      context: ./guardrails_service
+      dockerfile: Dockerfile
+    volumes:
+      - ./guardrails_service/models:/models:ro
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Infrastructure Services
+  mongodb:
+    image: mongo:7.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: demandbot
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_logs:/var/log/mongodb
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: true
+    depends_on:
+      - zookeeper
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+  mlflow:
+    image: python:3.11-slim
+    command: >
+      bash -c "
+        pip install mlflow==2.8.* &&
+        mlflow server 
+        --backend-store-uri sqlite:///mlflow/mlflow.db 
+        --default-artifact-root /mlflow/artifacts 
+        --host 0.0.0.0 
+        --port 5000
+      "
+    volumes:
+      - mlflow_data:/mlflow
+    networks:
+      - demandbot_network
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:
+  redis_data:
+  kafka_data:
+  zookeeper_data:
+  mlflow_data:
+  forecast_models:
+  enterprise_docs:
+  nginx_logs:
+  backend_logs:
+  ingest_logs:
+  forecast_logs:
+  rag_logs:
+  gateway_logs:
+  mongodb_logs:
+
+networks:
+  demandbot_network:
+    driver: bridge

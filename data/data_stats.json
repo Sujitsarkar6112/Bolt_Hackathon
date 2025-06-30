@@ -1,0 +1,44 @@
+{
+  "total_transactions": 1000,
+  "date_range": {
+    "start": "2023-01-01T00:00:00",
+    "end": "2024-01-01T00:00:00"
+  },
+  "skus": [
+    "SKU-BEAUTY",
+    "SKU-CLOTHING",
+    "SKU-ELECTRONICS"
+  ],
+  "sku_stats": {
+    "SKU-BEAUTY": {
+      "transaction_count": 307,
+      "total_units": 771,
+      "total_revenue": 143515.0,
+      "avg_price": 184.05537459283389,
+      "price_range": {
+        "min": 25.0,
+        "max": 500.0
+      }
+    },
+    "SKU-CLOTHING": {
+      "transaction_count": 351,
+      "total_units": 894,
+      "total_revenue": 155580.0,
+      "avg_price": 174.28774928774928,
+      "price_range": {
+        "min": 25.0,
+        "max": 500.0
+      }
+    },
+    "SKU-ELECTRONICS": {
+      "transaction_count": 342,
+      "total_units": 849,
+      "total_revenue": 156905.0,
+      "avg_price": 181.90058479532163,
+      "price_range": {
+        "min": 25.0,
+        "max": 500.0
+      }
+    }
+  }
+}

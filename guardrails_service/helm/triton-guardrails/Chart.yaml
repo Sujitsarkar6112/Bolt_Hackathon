@@ -1,0 +1,22 @@
+apiVersion: v2
+name: triton-guardrails
+description: Triton Inference Server with Guardrails Models
+type: application
+version: 0.1.0
+appVersion: "23.10"
+
+dependencies: []
+
+keywords:
+  - triton
+  - inference
+  - guardrails
+  - validation
+  - mlops
+
+maintainers:
+  - name: MLOps Team
+    email: mlops@company.com
+
+sources:
+  - https://github.com/triton-inference-server/server

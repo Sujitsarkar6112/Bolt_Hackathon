@@ -1,0 +1,187 @@
+name: End-to-End Pipeline Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
+
+env:
+  DOCKER_BUILDKIT: 1
+  COMPOSE_DOCKER_CLI_BUILD: 1
+
+jobs:
+  pipeline-e2e:
+    name: End-to-End Pipeline Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    services:
+      docker:
+        image: docker:24-dind
+        options: --privileged
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          use: true
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install test dependencies
+        run: |
+          pip install pytest pytest-asyncio httpx kafka-python pymongo
+          npm install -g k6
+      
+      - name: Create test environment file
+        run: |
+          cat > .env.test << EOF
+          MONGO_PASSWORD=testpassword123
+          MONGODB_ATLAS_URI=mongodb://admin:testpassword123@mongodb:27017/enterprise_rag?authSource=admin
+          OPENAI_API_KEY=sk-test-key-for-e2e-testing
+          S3_BUCKET_NAME=test-bucket
+          SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789/test-queue
+          AWS_ACCESS_KEY_ID=test-access-key
+          AWS_SECRET_ACCESS_KEY=test-secret-key
+          AWS_REGION=us-east-1
+          EOF
+      
+      - name: Build all services
+        run: |
+          docker-compose -f docker-compose.prod.yml build --parallel
+        env:
+          DOCKER_BUILDKIT: 1
+      
+      - name: Start infrastructure services
+        run: |
+          docker-compose -f docker-compose.prod.yml up -d mongodb redis kafka zookeeper mlflow
+          
+          # Wait for services to be ready
+          echo "Waiting for infrastructure services..."
+          sleep 30
+          
+          # Check MongoDB
+          docker-compose -f docker-compose.prod.yml exec -T mongodb mongosh --eval "db.adminCommand('ping')" || exit 1
+          
+          # Check Kafka
+          docker-compose -f docker-compose.prod.yml exec -T kafka kafka-topics --bootstrap-server localhost:9092 --list || exit 1
+      
+      - name: Create Kafka topics
+        run: |
+          docker-compose -f docker-compose.prod.yml exec -T kafka kafka-topics \
+            --bootstrap-server localhost:9092 \
+            --create --topic sales_txn --partitions 3 --replication-factor 1 || true
+          
+          docker-compose -f docker-compose.prod.yml exec -T kafka kafka-topics \
+            --bootstrap-server localhost:9092 \
+            --create --topic sales_ingested --partitions 3 --replication-factor 1 || true
+          
+          docker-compose -f docker-compose.prod.yml exec -T kafka kafka-topics \
+            --bootstrap-server localhost:9092 \
+            --create --topic model_retrain --partitions 1 --replication-factor 1 || true
+      
+      - name: Start application services
+        run: |
+          docker-compose -f docker-compose.prod.yml up -d \
+            backend ingest-service forecast-service rag-service \
+            sales-watcher retrain-consumer gateway-service \
+            triton-guardrails nginx
+          
+          # Wait for services to be ready
+          echo "Waiting for application services..."
+          sleep 60
+      
+      - name: Wait for services health
+        run: |
+          # Function to wait for service health
+          wait_for_service() {
+            local service_url=$1
+            local max_attempts=30
+            local attempt=1
+            
+            echo "Waiting for $service_url to be healthy..."
+            while [ $attempt -le $max_attempts ]; do
+              if curl -f -s "$service_url" > /dev/null; then
+                echo "$service_url is healthy"
+                return 0
+              fi
+              echo "Attempt $attempt/$max_attempts failed, retrying in 5s..."
+              sleep 5
+              attempt=$((attempt + 1))
+            done
+            
+            echo "Service $service_url failed to become healthy"
+            return 1
+          }
+          
+          # Wait for all services
+          wait_for_service "http://localhost:8080/api/health"
+          wait_for_service "http://localhost:8080/api/forecast/health" || true
+          wait_for_service "http://localhost:8080/api/ask" || true
+          wait_for_service "http://localhost:8000/v2/health/ready"  # Triton
+      
+      - name: Run E2E Pipeline Test
+        run: |
+          python tests/e2e/test_pipeline.py
+        env:
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          MONGODB_URL: mongodb://admin:testpassword123@localhost:27017/demandbot?authSource=admin
+          API_BASE_URL: http://localhost:8080/api
+          TRITON_URL: http://localhost:8000
+      
+      - name: Load test with K6
+        run: |
+          k6 run tests/e2e/load_test.js
+        env:
+          API_BASE_URL: http://localhost:8080/api
+      
+      - name: Validate data flow
+        run: |
+          python tests/e2e/validate_data_flow.py
+        env:
+          MONGODB_URL: mongodb://admin:testpassword123@localhost:27017/demandbot?authSource=admin
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+      
+      - name: Collect service logs
+        if: always()
+        run: |
+          mkdir -p logs
+          docker-compose -f docker-compose.prod.yml logs --no-color > logs/docker-compose.log 2>&1
+          
+          # Individual service logs
+          for service in backend ingest-service forecast-service rag-service gateway-service; do
+            docker-compose -f docker-compose.prod.yml logs --no-color $service > logs/$service.log 2>&1 || true
+          done
+      
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: e2e-logs
+          path: logs/
+          retention-days: 7
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f docker-compose.prod.yml down -v
+          docker system prune -f

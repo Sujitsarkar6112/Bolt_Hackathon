@@ -1,0 +1,38 @@
+name: "guardrail"
+backend: "python"
+max_batch_size: 8
+
+input [
+  {
+    name: "TEXT"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+output [
+  {
+    name: "VALIDATION_RESULT"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+
+instance_group [
+  {
+    count: 2
+    kind: KIND_CPU
+  }
+]
+
+dynamic_batching {
+  max_queue_delay_microseconds: 100000
+  preferred_batch_size: [ 4, 8 ]
+}
+
+version_policy: { all { }}
+
+parameters: {
+  key: "EXECUTION_ENV_PATH",
+  value: {string_value: "$$TRITON_MODEL_DIRECTORY/1/triton_env.tar.gz"}
+}

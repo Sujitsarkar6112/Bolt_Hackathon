@@ -1,0 +1,4 @@
+# Retrain models daily at 2 AM
+0 2 * * * /opt/conda/envs/forecast_service/bin/python /app/app/cron/retrain_scheduler.py >> /app/logs/retrain.log 2>&1
+
+# Empty line required at end of crontab

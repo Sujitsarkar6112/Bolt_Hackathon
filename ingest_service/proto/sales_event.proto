@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package sales;
+
+message SalesEvent {
+  string sku = 1;
+  int32 qty = 2;
+  double price = 3;
+  string ts = 4;  // ISO8601 timestamp
+  string event_id = 5;  // Optional unique identifier
+}

@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8004/chat
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev -- --host
+    depends_on:
+      gateway-service:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/demandbot
+      - ENVIRONMENT=development
+    depends_on:
+      - mongodb
+    volumes:
+      - ./backend:/app
+
+  gateway-service:
+    build:
+      context: ./gateway_service
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/demandbot
+      - ENVIRONMENT=development
+      - BACKEND_URL=http://backend:8000
+      - RAG_URL=http://rag-service:8000
+      - FORECAST_URL=http://forecast-service:8000
+      - FILTER_URL=http://filter-service:8000
+    depends_on:
+      - mongodb
+      - backend
+      - rag-service
+      - forecast-service
+      - filter-service
+    volumes:
+      - ./gateway_service:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  rag-service:
+    build:
+      context: ./rag_service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - DOCUMENTS_PATH=/app/docs
+      - FAISS_INDEX_PATH=/app/faiss_index
+      - ENVIRONMENT=development
+    depends_on:
+      - mongodb
+    volumes:
+      - ./rag_service:/app
+      - ./docs:/app/docs
+      - ./faiss_index:/app/faiss_index
+
+  forecast-service:
+    build:
+      context: ./forecast_service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/demandbot
+      - ENVIRONMENT=development
+    depends_on:
+      - mongodb
+    volumes:
+      - ./forecast_service:/app
+
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=demandbot
+    volumes:
+      - mongodb_data:/data/db
+
+  # Simulated Triton Filter Service
+  filter-service:
+    build:
+      context: ./filter_service
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017/demandbot
+    depends_on:
+      - mongodb
+
+volumes:
+  mongodb_data:

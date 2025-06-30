@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # Redpanda (Kafka-compatible) for development
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.15
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr
+      - internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr
+      - internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr
+      - redpanda:33145
+      - --advertise-rpc-addr
+      - redpanda:33145
+      - --smp
+      - '1'
+      - --memory
+      - 1G
+      - --mode
+      - dev-container
+      - --default-log-level=info
+    ports:
+      - "18081:18081"  # Schema Registry
+      - "18082:18082"  # Pandaproxy
+      - "19092:19092"  # Kafka
+      - "19644:9644"   # Admin API
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    networks:
+      - ingest_network
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # MongoDB 7
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: sales_db
+    volumes:
+      - mongodb_data:/data/db
+      - ./docker/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - ingest_network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Ingest Service
+  ingest-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ingest-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # API
+      - "8001:8001"  # Metrics
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_TOPIC: sales_txn
+      MONGODB_URL: mongodb://admin:password@mongodb:27017/sales_db?authSource=admin
+      LOG_LEVEL: INFO
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - ingest_network
+    volumes:
+      - ./app:/app/app:ro  # For development
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Kafka Topic Creator (runs once)
+  topic-creator:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.15
+    container_name: topic-creator
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - ingest_network
+    command: >
+      bash -c "
+        rpk topic create sales_txn --brokers redpanda:9092 --partitions 3 --replicas 1 || true
+        rpk topic list --brokers redpanda:9092
+      "
+
+volumes:
+  redpanda_data:
+  mongodb_data:
+
+networks:
+  ingest_network:
+    driver: bridge

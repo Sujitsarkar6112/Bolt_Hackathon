@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "triton-guardrails.fullname" . }}
+  labels:
+    {{- include "triton-guardrails.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "triton-guardrails.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "triton-guardrails.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "triton-guardrails.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: model-loader
+          image: busybox:1.35
+          command: ['sh', '-c']
+          args:
+            - |
+              echo "Setting up model repository..."
+              mkdir -p /models/guardrail/1
+              mkdir -p /models/ensemble_guardrail/1
+              cp /config/guardrail-config.pbtxt /models/guardrail/config.pbtxt
+              cp /config/ensemble-config.pbtxt /models/ensemble_guardrail/config.pbtxt
+              echo "Model repository setup complete"
+          volumeMounts:
+            - name: model-repository
+              mountPath: /models
+            - name: model-configs
+              mountPath: /config
+      containers:
+        - name: triton
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["tritonserver"]
+          args:
+            - --model-repository={{ .Values.triton.modelRepository }}
+            - --log-verbose={{ .Values.triton.logLevel }}
+            - --strict-model-config={{ .Values.triton.strictModelConfig }}
+            - --exit-on-error={{ .Values.triton.exitOnError }}
+            - --http-port={{ .Values.service.httpPort }}
+            - --grpc-port={{ .Values.service.grpcPort }}
+            - --metrics-port={{ .Values.service.metricsPort }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.service.metricsPort }}
+              protocol: TCP
+          env:
+            {{- toYaml .Values.env | nindent 12 }}
+          livenessProbe:
+            {{- if .Values.healthCheck.enabled }}
+            httpGet:
+              path: /v2/health/live
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+            {{- end }}
+          readinessProbe:
+            {{- if .Values.healthCheck.enabled }}
+            httpGet:
+              path: /v2/health/ready
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            successThreshold: {{ .Values.healthCheck.successThreshold }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: model-repository
+              mountPath: {{ .Values.triton.modelRepository }}
+            - name: model-configs
+              mountPath: /config
+      volumes:
+        - name: model-repository
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "triton-guardrails.fullname" . }}-models
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: model-configs
+          configMap:
+            name: {{ include "triton-guardrails.fullname" . }}-models
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

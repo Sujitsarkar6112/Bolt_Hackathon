@@ -1,0 +1,200 @@
+replicaCount: 2
+
+image:
+  repository: nvcr.io/nvidia/tritonserver
+  tag: "23.10-py3"
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  httpPort: 8000
+  grpcPort: 8001
+  metricsPort: 8002
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: triton-guardrails.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Triton-specific configuration
+triton:
+  modelRepository: /models
+  logLevel: INFO
+  strictModelConfig: true
+  exitOnError: true
+  
+  # Model configuration
+  models:
+    guardrail:
+      enabled: true
+      instances: 2
+    ensemble_guardrail:
+      enabled: true
+      instances: 2
+
+# ConfigMap for model configurations
+configMaps:
+  models:
+    enabled: true
+    data:
+      guardrail-config.pbtxt: |
+        name: "guardrail"
+        backend: "python"
+        max_batch_size: 8
+        
+        input [
+          {
+            name: "TEXT"
+            data_type: TYPE_STRING
+            dims: [ 1 ]
+          }
+        ]
+        
+        output [
+          {
+            name: "VALIDATION_RESULT"
+            data_type: TYPE_STRING
+            dims: [ 1 ]
+          }
+        ]
+        
+        instance_group [
+          {
+            count: 2
+            kind: KIND_CPU
+          }
+        ]
+        
+        dynamic_batching {
+          max_queue_delay_microseconds: 100000
+          preferred_batch_size: [ 4, 8 ]
+        }
+        
+        version_policy: { all { }}
+      
+      ensemble-config.pbtxt: |
+        name: "ensemble_guardrail"
+        platform: "ensemble"
+        max_batch_size: 8
+        
+        input [
+          {
+            name: "TEXT"
+            data_type: TYPE_STRING
+            dims: [ 1 ]
+          }
+        ]
+        
+        output [
+          {
+            name: "STATUS_CODE"
+            data_type: TYPE_INT32
+            dims: [ 1 ]
+          },
+          {
+            name: "RESULT"
+            data_type: TYPE_STRING
+            dims: [ 1 ]
+          }
+        ]
+        
+        ensemble_scheduling {
+          step [
+            {
+              model_name: "guardrail"
+              model_version: -1
+              input_map {
+                key: "TEXT"
+                value: "TEXT"
+              }
+              output_map {
+                key: "VALIDATION_RESULT"
+                value: "guardrail_result"
+              }
+            }
+          ]
+        }
+        
+        version_policy: { all { }}
+
+# Persistent volume for model storage
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+
+# Health checks
+healthCheck:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+# Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: false
+    namespace: monitoring
+    interval: 30s
+    scrapeTimeout: 10s
+
+# Environment variables
+env:
+  - name: TRITON_LOG_LEVEL
+    value: "INFO"
+  - name: TRITON_MODEL_REPOSITORY
+    value: "/models"
+  - name: PYTHONPATH
+    value: "/models"

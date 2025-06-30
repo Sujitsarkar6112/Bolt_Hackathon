@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  triton-guardrails:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: triton-guardrails
+    ports:
+      - "8000:8000"  # HTTP
+      - "8001:8001"  # gRPC
+      - "8002:8002"  # Metrics
+    environment:
+      - TRITON_LOG_LEVEL=INFO
+    volumes:
+      - ./models:/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # Test client service
+  guardrail-client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: guardrail-client
+    depends_on:
+      triton-guardrails:
+        condition: service_healthy
+    environment:
+      - TRITON_URL=http://triton-guardrails:8000
+    volumes:
+      - ./client:/app/client:ro
+      - ./tests:/app/tests:ro
+    command: ["python", "/app/client/guardrail_client.py", "--url", "http://triton-guardrails:8000", "--text", "SKU-ABC has quantity: 100 units at price: $29.99"]
+
+networks:
+  default:
+    name: guardrails_network

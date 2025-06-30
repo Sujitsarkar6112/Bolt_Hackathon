@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # MLflow Tracking Server
+  mlflow:
+    image: python:3.11-slim
+    container_name: mlflow-server
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=sqlite:///mlflow/mlflow.db
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    command: >
+      bash -c "
+        pip install mlflow==2.8.* &&
+        mlflow server 
+        --backend-store-uri sqlite:///mlflow/mlflow.db 
+        --default-artifact-root /mlflow/artifacts 
+        --host 0.0.0.0 
+        --port 5000
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # MongoDB (reuse from main project)
+  mongodb:
+    image: mongo:7.0
+    container_name: forecast-mongodb
+    ports:
+      - "27018:27017"  # Different port to avoid conflicts
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+      MONGO_INITDB_DATABASE: sales_db
+    volumes:
+      - mongodb_forecast_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Forecast Service
+  forecast-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: forecast-service
+    ports:
+      - "8002:8002"
+    environment:
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017/sales_db?authSource=admin
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - LOG_LEVEL=INFO
+      - USE_GPU=false
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro  # For development
+      - forecast_models:/app/models
+      - forecast_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mlflow_data:
+  mongodb_forecast_data:
+  forecast_models:
+  forecast_logs:
+
+networks:
+  default:
+    name: forecast_network

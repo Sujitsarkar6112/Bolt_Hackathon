@@ -1,0 +1,10 @@
+{{- if .Values.configMaps.models.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "triton-guardrails.fullname" . }}-models
+  labels:
+    {{- include "triton-guardrails.labels" . | nindent 4 }}
+data:
+  {{- toYaml .Values.configMaps.models.data | nindent 2 }}
+{{- end }}

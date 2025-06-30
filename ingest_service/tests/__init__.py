@@ -1,0 +1,1 @@
+"""Test suite for Sales Ingest Service"""

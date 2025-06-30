@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install requests pydantic
+
+# Copy client code
+COPY client/ ./client/
+COPY tests/ ./tests/
+
+# Default command
+CMD ["python", "client/guardrail_client.py", "--help"]
